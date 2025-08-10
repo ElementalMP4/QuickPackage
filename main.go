@@ -135,7 +135,7 @@ func doBuild(cfg *Config) {
 		log.Println("No build script specified, skipping build step")
 	}
 
-	log.Printf("Build step completed, temporary build dir will be removed")
+	log.Printf("Build complete!")
 }
 
 func doInstall(cfg *Config) {
