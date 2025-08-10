@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"log"
 	"os"
@@ -56,6 +57,7 @@ func main() {
 	writePostinst(debianDir, &cfg)
 	writePrerm(debianDir)
 	writeService(debianDir, &cfg)
+	writeChangelog(debianDir, &cfg)
 
 	appDir := filepath.Join(buildDir, cfg.InstallPath[1:])
 	if err := os.MkdirAll(appDir, 0755); err != nil {
@@ -77,6 +79,20 @@ func main() {
 	}
 
 	fmt.Println("Package built successfully!")
+}
+
+func writeChangelog(dir string, cfg *Config) {
+	content := fmt.Sprintf(`%s (%s) stable; urgency=low
+
+  * QuickPackage update
+
+ -- %s  %s
+`, cfg.Name, cfg.Version, cfg.Maintainer, time.Now().Format("Mon, 02 Jan 2006 15:04:05 -0700"))
+
+	err := os.WriteFile(filepath.Join(dir, "changelog"), []byte(content), 0644)
+	if err != nil {
+		log.Fatalf("Failed to write changelog: %v", err)
+	}
 }
 
 func writeControl(dir string, cfg *Config) {
