@@ -101,7 +101,6 @@ func writeControl(dir string, cfg *Config) {
 Maintainer: {{.Maintainer}}
 Section: utils
 Priority: optional
-Build-Depends: debhelper (>= 9)
 Standards-Version: 4.5.0
 
 Package: {{.Name}}
