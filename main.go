@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	cp "github.com/otiai10/copy"
 )
 
 type FileEntry struct {
@@ -103,7 +104,6 @@ func doBuild(cfg *Config) {
 
 	log.Printf("Build directory: %s", buildDir)
 
-	// Copy build_files to buildDir
 	for _, pattern := range cfg.BuildFiles {
 		matches, err := filepath.Glob(pattern)
 		if err != nil {
@@ -122,10 +122,8 @@ func doBuild(cfg *Config) {
 	}
 
 	if cfg.BuildScript != "" {
-		// Build script runs inside buildDir
 		scriptPath := filepath.Join(buildDir, filepath.Base(cfg.BuildScript))
 		if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-			// Maybe the build script is outside build_files, copy it too
 			err = copyFileOrDir(cfg.GetBuildScript(), scriptPath)
 			if err != nil {
 				log.Fatalf("Failed to copy build script %s: %v", cfg.BuildScript, err)
@@ -143,7 +141,6 @@ func doBuild(cfg *Config) {
 		log.Println("No build script specified, skipping build step")
 	}
 
-	// Optional: leave buildDir around for debugging or remove automatically by defer
 	log.Printf("Build step completed, temporary build dir will be removed")
 }
 
@@ -151,13 +148,11 @@ func doInstall(cfg *Config) {
 	installDir := filepath.Join("/opt/qp_apps", cfg.AppName)
 	log.Printf("Installing to %s", installDir)
 
-	// Create install directory if needed
 	err := os.MkdirAll(installDir, 0755)
 	if err != nil {
 		log.Fatalf("Failed to create install dir: %v", err)
 	}
 
-	// Find the temp build dir for fallback if build step ran
 	buildDir, _ := findTempBuildDir(cfg.AppName)
 
 	for _, entry := range cfg.InstallFiles {
@@ -186,10 +181,8 @@ func doInstall(cfg *Config) {
 		log.Printf("Copied install file %s", srcPath)
 	}
 
-	// Run install script in installDir
 	scriptPath := filepath.Join(installDir, filepath.Base(cfg.InstallScript))
 	if !exists(scriptPath) {
-		// Try copying install script if outside installFiles
 		err := copyFileOrDir(cfg.GetInstallScript(), scriptPath)
 		if err != nil {
 			log.Fatalf("Failed to copy install script %s: %v", cfg.InstallScript, err)
@@ -203,6 +196,21 @@ func doInstall(cfg *Config) {
 		if err != nil {
 			log.Fatalf("Failed to install systemd unit: %v", err)
 		}
+
+		serviceName := cfg.AppName + ".service"
+		cmdCheck := exec.Command("systemctl", "is-active", "--quiet", serviceName)
+		err = cmdCheck.Run()
+		if err == nil {
+			log.Printf("Restarting active systemd service %s", serviceName)
+			cmdRestart := exec.Command("systemctl", "restart", serviceName)
+			cmdRestart.Stdout = os.Stdout
+			cmdRestart.Stderr = os.Stderr
+			if err := cmdRestart.Run(); err != nil {
+				log.Fatalf("Failed to restart systemd service %s: %v", serviceName, err)
+			}
+		} else {
+			log.Printf("Systemd service %s is not active, no restart needed", serviceName)
+		}
 	}
 
 	log.Printf("Install completed")
@@ -212,7 +220,6 @@ func doUninstall(cfg *Config) {
 	installDir := filepath.Join("/opt/qp_apps", cfg.AppName)
 
 	if cfg.Systemd {
-		// Stop and disable systemd service
 		service := cfg.AppName + ".service"
 		log.Printf("Stopping and disabling systemd service %s", service)
 		exec.Command("systemctl", "stop", service).Run()
@@ -223,7 +230,6 @@ func doUninstall(cfg *Config) {
 
 	scriptPath := filepath.Join(installDir, filepath.Base(cfg.UninstallScript))
 	if !exists(scriptPath) {
-		// Try copying uninstall script if outside installFiles
 		err := copyFileOrDir(cfg.GetUninstallScript(), scriptPath)
 		if err != nil {
 			log.Fatalf("Failed to copy uninstall script %s: %v", cfg.UninstallScript, err)
@@ -239,64 +245,7 @@ func doUninstall(cfg *Config) {
 }
 
 func copyFileOrDir(src, dst string) error {
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-
-	if info.IsDir() {
-		return copyDir(src, dst)
-	}
-	return copyFile(src, dst)
-}
-
-func copyFile(srcFile, dstFile string) error {
-	src, err := os.Open(srcFile)
-	if err != nil {
-		return err
-	}
-	defer src.Close()
-
-	dst, err := os.Create(dstFile)
-	if err != nil {
-		return err
-	}
-	defer dst.Close()
-
-	_, err = io.Copy(dst, src)
-	return err
-}
-
-func copyDir(srcDir, dstDir string) error {
-	info, err := os.Stat(srcDir)
-	if err != nil {
-		return err
-	}
-
-	err = os.MkdirAll(dstDir, info.Mode())
-	if err != nil {
-		return err
-	}
-
-	entries, err := os.ReadDir(srcDir)
-	if err != nil {
-		return err
-	}
-
-	for _, entry := range entries {
-		srcPath := filepath.Join(srcDir, entry.Name())
-		dstPath := filepath.Join(dstDir, entry.Name())
-
-		if entry.IsDir() {
-			err = copyDir(srcPath, dstPath)
-		} else {
-			err = copyFile(srcPath, dstPath)
-		}
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	return cp.Copy(src, dst)
 }
 
 func exists(path string) bool {
@@ -352,7 +301,6 @@ WantedBy=multi-user.target
 	return nil
 }
 
-// Try to find temporary build directory (naive approach, could improve)
 func findTempBuildDir(appName string) (string, error) {
 	tmp := os.TempDir()
 	entries, err := os.ReadDir(tmp)
