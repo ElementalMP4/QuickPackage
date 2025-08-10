@@ -1,7 +1,7 @@
 .PHONY: all build install
 
 BINARY=qp
-INSTALL_DIR=$(HOME)/bin
+INSTALL_DIR=/usr/bin
 
 all: build
 
