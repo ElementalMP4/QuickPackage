@@ -23,8 +23,8 @@ type Config struct {
 	BuildFiles      []string    `json:"build_files"`
 	InstallFiles    []FileEntry `json:"install_files"`
 	BuildScript     string      `json:"build_script,omitempty"`
-	InstallScript   string      `json:"install_script"`
-	UninstallScript string      `json:"uninstall_script"`
+	InstallScript   string      `json:"install_script,omitempty"`
+	UninstallScript string      `json:"uninstall_script,omitempty"`
 	Systemd         bool        `json:"systemd"`
 	Exec            string      `json:"exec,omitempty"`
 }
@@ -84,12 +84,6 @@ func validateConfig(cfg *Config) {
 	}
 	if len(cfg.InstallFiles) == 0 {
 		log.Fatal("config: install_files must have at least one entry")
-	}
-	if cfg.InstallScript == "" {
-		log.Fatal("config: install_script is required")
-	}
-	if cfg.UninstallScript == "" {
-		log.Fatal("config: uninstall_script is required")
 	}
 	if cfg.Systemd && cfg.Exec == "" {
 		log.Fatal("config: exec command required when systemd=true")
@@ -181,15 +175,19 @@ func doInstall(cfg *Config) {
 		log.Printf("Copied install file %s", srcPath)
 	}
 
-	scriptPath := filepath.Join(installDir, filepath.Base(cfg.InstallScript))
-	if !exists(scriptPath) {
-		err := copyFileOrDir(cfg.GetInstallScript(), scriptPath)
-		if err != nil {
-			log.Fatalf("Failed to copy install script %s: %v", cfg.InstallScript, err)
+	if cfg.InstallScript != "" {
+		scriptPath := filepath.Join(installDir, filepath.Base(cfg.InstallScript))
+		if !exists(scriptPath) {
+			err := copyFileOrDir(cfg.GetInstallScript(), scriptPath)
+			if err != nil {
+				log.Fatalf("Failed to copy install script %s: %v", cfg.InstallScript, err)
+			}
 		}
+		log.Printf("Running install script: %s", scriptPath)
+		runScript(scriptPath, installDir)
+	} else {
+		log.Println("No install script specified, skipping install script step")
 	}
-	log.Printf("Running install script: %s", scriptPath)
-	runScript(scriptPath, installDir)
 
 	if cfg.Systemd {
 		err := installSystemdUnit(cfg)
@@ -228,15 +226,19 @@ func doUninstall(cfg *Config) {
 		exec.Command("systemctl", "daemon-reload").Run()
 	}
 
-	scriptPath := filepath.Join(installDir, filepath.Base(cfg.UninstallScript))
-	if !exists(scriptPath) {
-		err := copyFileOrDir(cfg.GetUninstallScript(), scriptPath)
-		if err != nil {
-			log.Fatalf("Failed to copy uninstall script %s: %v", cfg.UninstallScript, err)
+	if cfg.UninstallScript != "" {
+		scriptPath := filepath.Join(installDir, filepath.Base(cfg.UninstallScript))
+		if !exists(scriptPath) {
+			err := copyFileOrDir(cfg.GetUninstallScript(), scriptPath)
+			if err != nil {
+				log.Fatalf("Failed to copy uninstall script %s: %v", cfg.UninstallScript, err)
+			}
 		}
+		log.Printf("Running uninstall script: %s", scriptPath)
+		runScript(scriptPath, installDir)
+	} else {
+		log.Println("No uninstall script specified, skipping uninstall script step")
 	}
-	log.Printf("Running uninstall script: %s", scriptPath)
-	runScript(scriptPath, installDir)
 
 	log.Printf("Removing install directory %s", installDir)
 	os.RemoveAll(installDir)
