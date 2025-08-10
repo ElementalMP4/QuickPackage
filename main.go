@@ -13,14 +13,16 @@ import (
 )
 
 type Config struct {
-	Name         string   `json:"name"`
-	Version      string   `json:"version"`
-	InstallPath  string   `json:"install_path"`
-	Files        []string `json:"files"`
-	Dependencies []string `json:"dependencies"`
-	RunCommand   string   `json:"run_command"`
-	ServiceUser  string   `json:"service_user"`
-	Maintainer   string   `json:"maintainer"`
+	Name           string   `json:"name"`
+	Version        string   `json:"version"`
+	InstallPath    string   `json:"install_path"`
+	Files          []string `json:"files"`
+	Dependencies   []string `json:"dependencies"`
+	RunCommand     string   `json:"run_command"`
+	ServiceUser    string   `json:"service_user"`
+	Maintainer     string   `json:"maintainer"`
+	PrebuildScript string   `json:"prebuild_script,omitempty"`
+	PostinstScript string   `json:"postinst_script,omitempty"`
 }
 
 func main() {
@@ -49,6 +51,7 @@ func main() {
 
 	writeControl(debianDir, &cfg)
 	writeRules(debianDir)
+	writePreinst(debianDir, &cfg)
 	writeInstall(debianDir, &cfg)
 	writePostinst(debianDir, &cfg)
 	writePrerm(debianDir)
@@ -146,9 +149,57 @@ func writeInstall(dir string, cfg *Config) {
 	}
 }
 
+func writePreinst(dir string, cfg *Config) {
+	path := filepath.Join(dir, "preinst")
+
+	if cfg.PrebuildScript != "" {
+		data, err := os.ReadFile(cfg.PrebuildScript)
+		if err != nil {
+			log.Fatalf("Failed to read prebuild script %s: %v", cfg.PrebuildScript, err)
+		}
+		err = os.WriteFile(path, data, 0755)
+		if err != nil {
+			log.Fatalf("Failed to write preinst: %v", err)
+		}
+		return
+	}
+
+	defaultPreinst := `#!/bin/bash
+set -e
+# Default preinst script
+exit 0
+`
+	err := os.WriteFile(path, []byte(defaultPreinst), 0755)
+	if err != nil {
+		log.Fatalf("Failed to write default preinst: %v", err)
+	}
+}
+
 func writePostinst(dir string, cfg *Config) {
+	path := filepath.Join(dir, "postinst")
+
+	var userScriptPart string
+	if cfg.PostinstScript != "" {
+		userScriptName := "custom_postinst.sh"
+		userScriptDest := filepath.Join(dir, userScriptName)
+
+		data, err := os.ReadFile(cfg.PostinstScript)
+		if err != nil {
+			log.Fatalf("Failed to read user postinst script %s: %v", cfg.PostinstScript, err)
+		}
+
+		err = os.WriteFile(userScriptDest, data, 0755)
+		if err != nil {
+			log.Fatalf("Failed to write user postinst script to debian dir: %v", err)
+		}
+
+		userScriptPart = fmt.Sprintf("\n# Run user-defined postinst script\n./%s \"$@\"\n", userScriptName)
+	}
+
 	postinst := fmt.Sprintf(`#!/bin/bash
 set -e
+
+%s
 
 if ! id %s >/dev/null 2>&1; then
     useradd --system --no-create-home --shell /usr/sbin/nologin %s
@@ -157,24 +208,24 @@ fi
 mkdir -p %s
 chown -R %s:%s %s
 
-if [ ! -d %s/venv ]; then
-    python3 -m venv %s/venv
-fi
-
-%s/venv/bin/pip install --upgrade pip
-%s/venv/bin/pip install -r %s/requirements.txt
-
 systemctl daemon-reload
 systemctl enable %s.service
 systemctl restart %s.service
 
 exit 0
-`, cfg.ServiceUser, cfg.ServiceUser, cfg.InstallPath, cfg.ServiceUser, cfg.ServiceUser, cfg.InstallPath,
-		cfg.InstallPath, cfg.InstallPath,
-		cfg.InstallPath, cfg.InstallPath, cfg.InstallPath,
-		cfg.Name, cfg.Name)
+`,
+		userScriptPart,
+		cfg.ServiceUser,
+		cfg.ServiceUser,
+		cfg.InstallPath,
+		cfg.ServiceUser,
+		cfg.ServiceUser,
+		cfg.InstallPath,
+		cfg.Name,
+		cfg.Name,
+	)
 
-	err := os.WriteFile(filepath.Join(dir, "postinst"), []byte(postinst), 0755)
+	err := os.WriteFile(path, []byte(postinst), 0755)
 	if err != nil {
 		log.Fatalf("Failed to write postinst: %v", err)
 	}
