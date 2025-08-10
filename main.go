@@ -1,307 +1,368 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
-	"time"
-
+	"io"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"text/template"
+	"strings"
 )
 
+type FileEntry struct {
+	File string `json:"file"`
+	From string `json:"from"`
+}
+
 type Config struct {
-	Name           string   `json:"name"`
-	Version        string   `json:"version"`
-	InstallPath    string   `json:"install_path"`
-	Files          []string `json:"files"`
-	Dependencies   []string `json:"dependencies"`
-	RunCommand     string   `json:"run_command"`
-	ServiceUser    string   `json:"service_user"`
-	Maintainer     string   `json:"maintainer"`
-	PrebuildScript string   `json:"prebuild_script,omitempty"`
-	PostinstScript string   `json:"postinst_script,omitempty"`
+	AppName         string      `json:"app_name"`
+	BuildFiles      []string    `json:"build_files"`
+	InstallFiles    []FileEntry `json:"install_files"`
+	BuildScript     string      `json:"build_script,omitempty"`
+	InstallScript   string      `json:"install_script"`
+	UninstallScript string      `json:"uninstall_script"`
+	Systemd         bool        `json:"systemd"`
+	Exec            string      `json:"exec,omitempty"`
+}
+
+func (c Config) GetBuildScript() string {
+	return fmt.Sprintf(".qp/%s", c.BuildScript)
+}
+
+func (c Config) GetInstallScript() string {
+	return fmt.Sprintf(".qp/%s", c.InstallScript)
+}
+
+func (c Config) GetUninstallScript() string {
+	return fmt.Sprintf(".qp/%s", c.UninstallScript)
 }
 
 func main() {
-	configPath := ".qp/config.json"
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		log.Fatalf("Failed to read config file %s: %v", configPath, err)
+	action := flag.String("action", "", "Action to perform: build, install, uninstall")
+	configPath := flag.String("config", ".qp/config.json", "Path to config file")
+	flag.Parse()
+
+	if *action != "build" && *action != "install" && *action != "uninstall" {
+		log.Fatal("Must specify -action=build|install|uninstall")
 	}
 
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+	validateConfig(cfg)
+
+	switch *action {
+	case "build":
+		doBuild(cfg)
+	case "install":
+		doInstall(cfg)
+	case "uninstall":
+		doUninstall(cfg)
+	}
+}
+
+func loadConfig(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		log.Fatalf("Failed to parse config: %v", err)
+		return nil, err
 	}
+	return &cfg, nil
+}
 
-	buildDir, err := os.MkdirTemp("", "quickpackage-"+cfg.Name)
+func validateConfig(cfg *Config) {
+	if cfg.AppName == "" {
+		log.Fatal("config: app_name is required")
+	}
+	if len(cfg.InstallFiles) == 0 {
+		log.Fatal("config: install_files must have at least one entry")
+	}
+	if cfg.InstallScript == "" {
+		log.Fatal("config: install_script is required")
+	}
+	if cfg.UninstallScript == "" {
+		log.Fatal("config: uninstall_script is required")
+	}
+	if cfg.Systemd && cfg.Exec == "" {
+		log.Fatal("config: exec command required when systemd=true")
+	}
+}
+
+func doBuild(cfg *Config) {
+	buildDir, err := os.MkdirTemp("/tmp", "qp_build_"+cfg.AppName+"_")
 	if err != nil {
-		log.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(buildDir)
-	fmt.Println("Building in", buildDir)
-
-	debianDir := filepath.Join(buildDir, "debian")
-	if err := os.Mkdir(debianDir, 0755); err != nil {
-		log.Fatalf("Failed to create debian dir: %v", err)
+		log.Fatalf("Failed to create build temp dir: %v", err)
 	}
 
-	writeControl(debianDir, &cfg)
-	writeRules(debianDir)
-	writePreinst(debianDir, &cfg)
-	writeInstall(debianDir, &cfg)
-	writePostinst(debianDir, &cfg)
-	writePrerm(debianDir)
-	writeService(debianDir, &cfg)
-	writeChangelog(debianDir, &cfg)
+	log.Printf("Build directory: %s", buildDir)
 
-	appDir := filepath.Join(buildDir, cfg.InstallPath[1:])
-	if err := os.MkdirAll(appDir, 0755); err != nil {
-		log.Fatalf("Failed to create app dir: %v", err)
+	// Copy build_files to buildDir
+	for _, pattern := range cfg.BuildFiles {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			log.Fatalf("Invalid glob pattern %q: %v", pattern, err)
+		}
+		if len(matches) == 0 {
+			log.Printf("Warning: no build files matched pattern %q", pattern)
+		}
+		for _, src := range matches {
+			err := copyFileOrDir(src, filepath.Join(buildDir, filepath.Base(src)))
+			if err != nil {
+				log.Fatalf("Failed to copy build file %s: %v", src, err)
+			}
+			log.Printf("Copied build file %s", src)
+		}
 	}
 
-	copyFiles(appDir, cfg.Files)
-
-	if err := os.Chdir(buildDir); err != nil {
-		log.Fatalf("Failed to chdir: %v", err)
+	if cfg.BuildScript != "" {
+		// Build script runs inside buildDir
+		scriptPath := filepath.Join(buildDir, filepath.Base(cfg.BuildScript))
+		if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+			// Maybe the build script is outside build_files, copy it too
+			err = copyFileOrDir(cfg.GetBuildScript(), scriptPath)
+			if err != nil {
+				log.Fatalf("Failed to copy build script %s: %v", cfg.BuildScript, err)
+			}
+		}
+		log.Printf("Running build script: %s", scriptPath)
+		cmd := exec.Command("/bin/bash", scriptPath)
+		cmd.Dir = buildDir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			log.Fatalf("Build script failed: %v", err)
+		}
+	} else {
+		log.Println("No build script specified, skipping build step")
 	}
 
-	cmd := exec.Command("dpkg-buildpackage", "-us", "-uc")
+	// Optional: leave buildDir around for debugging or remove automatically by defer
+	log.Printf("Build step completed, temporary build dir will be removed")
+}
+
+func doInstall(cfg *Config) {
+	installDir := filepath.Join("/opt/qp_apps", cfg.AppName)
+	log.Printf("Installing to %s", installDir)
+
+	// Create install directory if needed
+	err := os.MkdirAll(installDir, 0755)
+	if err != nil {
+		log.Fatalf("Failed to create install dir: %v", err)
+	}
+
+	// Find the temp build dir for fallback if build step ran
+	buildDir, _ := findTempBuildDir(cfg.AppName)
+
+	for _, entry := range cfg.InstallFiles {
+		var srcPath string
+		switch entry.From {
+		case "cwd":
+			srcPath = entry.File
+		case "build":
+			if buildDir == "" {
+				log.Fatalf("Build directory unknown, but install file %q is marked from build", entry.File)
+			}
+			srcPath = filepath.Join(buildDir, entry.File)
+		default:
+			log.Fatalf("Unknown 'from' value %q for install file %q", entry.From, entry.File)
+		}
+
+		if !exists(srcPath) {
+			log.Fatalf("Install source file %s does not exist", srcPath)
+		}
+
+		dstPath := filepath.Join(installDir, filepath.Base(entry.File))
+		err := copyFileOrDir(srcPath, dstPath)
+		if err != nil {
+			log.Fatalf("Failed to copy install file %s: %v", srcPath, err)
+		}
+		log.Printf("Copied install file %s", srcPath)
+	}
+
+	// Run install script in installDir
+	scriptPath := filepath.Join(installDir, filepath.Base(cfg.InstallScript))
+	if !exists(scriptPath) {
+		// Try copying install script if outside installFiles
+		err := copyFileOrDir(cfg.GetInstallScript(), scriptPath)
+		if err != nil {
+			log.Fatalf("Failed to copy install script %s: %v", cfg.InstallScript, err)
+		}
+	}
+	log.Printf("Running install script: %s", scriptPath)
+	runScript(scriptPath, installDir)
+
+	if cfg.Systemd {
+		err := installSystemdUnit(cfg)
+		if err != nil {
+			log.Fatalf("Failed to install systemd unit: %v", err)
+		}
+	}
+
+	log.Printf("Install completed")
+}
+
+func doUninstall(cfg *Config) {
+	installDir := filepath.Join("/opt/qp_apps", cfg.AppName)
+
+	if cfg.Systemd {
+		// Stop and disable systemd service
+		service := cfg.AppName + ".service"
+		log.Printf("Stopping and disabling systemd service %s", service)
+		exec.Command("systemctl", "stop", service).Run()
+		exec.Command("systemctl", "disable", service).Run()
+		os.Remove("/usr/lib/systemd/system/" + service)
+		exec.Command("systemctl", "daemon-reload").Run()
+	}
+
+	scriptPath := filepath.Join(installDir, filepath.Base(cfg.UninstallScript))
+	if !exists(scriptPath) {
+		// Try copying uninstall script if outside installFiles
+		err := copyFileOrDir(cfg.GetUninstallScript(), scriptPath)
+		if err != nil {
+			log.Fatalf("Failed to copy uninstall script %s: %v", cfg.UninstallScript, err)
+		}
+	}
+	log.Printf("Running uninstall script: %s", scriptPath)
+	runScript(scriptPath, installDir)
+
+	log.Printf("Removing install directory %s", installDir)
+	os.RemoveAll(installDir)
+
+	log.Printf("Uninstall completed")
+}
+
+func copyFileOrDir(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+
+	if info.IsDir() {
+		return copyDir(src, dst)
+	}
+	return copyFile(src, dst)
+}
+
+func copyFile(srcFile, dstFile string) error {
+	src, err := os.Open(srcFile)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	dst, err := os.Create(dstFile)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+
+	_, err = io.Copy(dst, src)
+	return err
+}
+
+func copyDir(srcDir, dstDir string) error {
+	info, err := os.Stat(srcDir)
+	if err != nil {
+		return err
+	}
+
+	err = os.MkdirAll(dstDir, info.Mode())
+	if err != nil {
+		return err
+	}
+
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(srcDir, entry.Name())
+		dstPath := filepath.Join(dstDir, entry.Name())
+
+		if entry.IsDir() {
+			err = copyDir(srcPath, dstPath)
+		} else {
+			err = copyFile(srcPath, dstPath)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func runScript(scriptPath, workDir string) {
+	cmd := exec.Command("/bin/bash", scriptPath)
+	cmd.Dir = workDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	fmt.Println("Running dpkg-buildpackage...")
-	if err := cmd.Run(); err != nil {
-		log.Fatalf("dpkg-buildpackage failed: %v", err)
-	}
-
-	fmt.Println("Package built successfully!")
-}
-
-func writeChangelog(dir string, cfg *Config) {
-	content := fmt.Sprintf(`%s (%s) stable; urgency=low
-
-  * QuickPackage update
-
-  -- %s  %s
-
-`, cfg.Name, cfg.Version, cfg.Maintainer, time.Now().Format("Mon, 02 Jan 2006 15:04:05 -0700"))
-
-	err := os.WriteFile(filepath.Join(dir, "changelog"), []byte(content), 0644)
+	err := cmd.Run()
 	if err != nil {
-		log.Fatalf("Failed to write changelog: %v", err)
+		log.Fatalf("Script %s failed: %v", scriptPath, err)
 	}
 }
 
-func writeControl(dir string, cfg *Config) {
-	controlTemplate := `Source: {{.Name}}
-Maintainer: {{.Maintainer}}
-Section: utils
-Priority: optional
-Standards-Version: 4.5.0
-
-Package: {{.Name}}
-Architecture: all
-Depends: {{ join .Dependencies ", " }}
-Description: {{.Name}} application packaged by QuickPackage
-`
-
-	tmpl, err := template.New("control").Funcs(template.FuncMap{
-		"join": func(arr []string, sep string) string {
-			return joinStrings(arr, sep)
-		},
-	}).Parse(controlTemplate)
-	if err != nil {
-		log.Fatalf("Template parse error: %v", err)
-	}
-
-	var buf bytes.Buffer
-	err = tmpl.Execute(&buf, cfg)
-	if err != nil {
-		log.Fatalf("Template exec error: %v", err)
-	}
-
-	err = os.WriteFile(filepath.Join(dir, "control"), buf.Bytes(), 0644)
-	if err != nil {
-		log.Fatalf("Failed to write control: %v", err)
-	}
-}
-
-func joinStrings(arr []string, sep string) string {
-	result := ""
-	for i, s := range arr {
-		if i > 0 {
-			result += sep
-		}
-		result += s
-	}
-	return result
-}
-
-func writeRules(dir string) {
-	rules := `#!/usr/bin/make -f
-%:
-	dh $@
-`
-	path := filepath.Join(dir, "rules")
-	err := os.WriteFile(path, []byte(rules), 0755)
-	if err != nil {
-		log.Fatalf("Failed to write rules: %v", err)
-	}
-}
-
-func writeInstall(dir string, cfg *Config) {
-	var lines []string
-	for _, pattern := range cfg.Files {
-		lines = append(lines, fmt.Sprintf("%s %s/", pattern, cfg.InstallPath))
-	}
-	lines = append(lines, fmt.Sprintf("debian/%s.service etc/systemd/system/", cfg.Name))
-
-	err := os.WriteFile(filepath.Join(dir, "install"), []byte(fmt.Sprintln(lines)), 0644)
-	if err != nil {
-		log.Fatalf("Failed to write install: %v", err)
-	}
-}
-
-func writePreinst(dir string, cfg *Config) {
-	path := filepath.Join(dir, "preinst")
-
-	if cfg.PrebuildScript != "" {
-		data, err := os.ReadFile(cfg.PrebuildScript)
-		if err != nil {
-			log.Fatalf("Failed to read prebuild script %s: %v", cfg.PrebuildScript, err)
-		}
-		err = os.WriteFile(path, data, 0755)
-		if err != nil {
-			log.Fatalf("Failed to write preinst: %v", err)
-		}
-		return
-	}
-
-	defaultPreinst := `#!/bin/bash
-set -e
-# Default preinst script
-exit 0
-`
-	err := os.WriteFile(path, []byte(defaultPreinst), 0755)
-	if err != nil {
-		log.Fatalf("Failed to write default preinst: %v", err)
-	}
-}
-
-func writePostinst(dir string, cfg *Config) {
-	path := filepath.Join(dir, "postinst")
-
-	var userScriptPart string
-	if cfg.PostinstScript != "" {
-		userScriptName := "custom_postinst.sh"
-		userScriptDest := filepath.Join(dir, userScriptName)
-
-		data, err := os.ReadFile(cfg.PostinstScript)
-		if err != nil {
-			log.Fatalf("Failed to read user postinst script %s: %v", cfg.PostinstScript, err)
-		}
-
-		err = os.WriteFile(userScriptDest, data, 0755)
-		if err != nil {
-			log.Fatalf("Failed to write user postinst script to debian dir: %v", err)
-		}
-
-		userScriptPart = fmt.Sprintf("\n# Run user-defined postinst script\n./%s \"$@\"\n", userScriptName)
-	}
-
-	postinst := fmt.Sprintf(`#!/bin/bash
-set -e
-
-%s
-
-if ! id %s >/dev/null 2>&1; then
-    useradd --system --no-create-home --shell /usr/sbin/nologin %s
-fi
-
-mkdir -p %s
-chown -R %s:%s %s
-
-systemctl daemon-reload
-systemctl enable %s.service
-systemctl restart %s.service
-
-exit 0
-`,
-		userScriptPart,
-		cfg.ServiceUser,
-		cfg.ServiceUser,
-		cfg.InstallPath,
-		cfg.ServiceUser,
-		cfg.ServiceUser,
-		cfg.InstallPath,
-		cfg.Name,
-		cfg.Name,
-	)
-
-	err := os.WriteFile(path, []byte(postinst), 0755)
-	if err != nil {
-		log.Fatalf("Failed to write postinst: %v", err)
-	}
-}
-
-func writePrerm(dir string) {
-	prerm := `#!/bin/bash
-set -e
-systemctl stop receiptify.service || true
-systemctl disable receiptify.service || true
-systemctl daemon-reload
-exit 0
-`
-	err := os.WriteFile(filepath.Join(dir, "prerm"), []byte(prerm), 0755)
-	if err != nil {
-		log.Fatalf("Failed to write prerm: %v", err)
-	}
-}
-
-func writeService(dir string, cfg *Config) {
-	service := fmt.Sprintf(`[Unit]
+func installSystemdUnit(cfg *Config) error {
+	unit := fmt.Sprintf(`[Unit]
 Description=%s service
 After=network.target
 
 [Service]
 Type=simple
-User=%s
-Group=%s
-WorkingDirectory=%s
 ExecStart=%s
-Restart=on-failure
+Restart=always
+User=root
 
 [Install]
 WantedBy=multi-user.target
-`, cfg.Name, cfg.ServiceUser, cfg.ServiceUser, cfg.InstallPath, cfg.RunCommand)
+`, cfg.AppName, cfg.Exec)
 
-	err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s.service", cfg.Name)), []byte(service), 0644)
+	unitPath := "/usr/lib/systemd/system/" + cfg.AppName + ".service"
+	err := os.WriteFile(unitPath, []byte(unit), 0644)
 	if err != nil {
-		log.Fatalf("Failed to write service: %v", err)
+		return err
 	}
+	log.Printf("Wrote systemd unit to %s", unitPath)
+
+	cmds := [][]string{
+		{"systemctl", "daemon-reload"},
+		{"systemctl", "enable", "--now", cfg.AppName + ".service"},
+	}
+	for _, args := range cmds {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("%s failed: %w", strings.Join(args, " "), err)
+		}
+	}
+	return nil
 }
 
-func copyFiles(dest string, patterns []string) {
-	for _, pattern := range patterns {
-		matches, err := filepath.Glob(pattern)
-		if err != nil {
-			log.Fatalf("Invalid glob %s: %v", pattern, err)
-		}
-		for _, src := range matches {
-			data, err := os.ReadFile(src)
-			if err != nil {
-				log.Fatalf("Failed to read %s: %v", src, err)
-			}
-			dstPath := filepath.Join(dest, filepath.Base(src))
-			err = os.WriteFile(dstPath, data, 0644)
-			if err != nil {
-				log.Fatalf("Failed to write %s: %v", dstPath, err)
-			}
-			fmt.Println("Copied", src, "to", dstPath)
+// Try to find temporary build directory (naive approach, could improve)
+func findTempBuildDir(appName string) (string, error) {
+	tmp := os.TempDir()
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "qp_build_"+appName+"_") {
+			return filepath.Join(tmp, e.Name()), nil
 		}
 	}
+	return "", fmt.Errorf("build dir not found")
 }
