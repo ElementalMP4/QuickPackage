@@ -86,7 +86,8 @@ func writeChangelog(dir string, cfg *Config) {
 
   * QuickPackage update
 
- -- %s  %s
+  -- %s  %s
+
 `, cfg.Name, cfg.Version, cfg.Maintainer, time.Now().Format("Mon, 02 Jan 2006 15:04:05 -0700"))
 
 	err := os.WriteFile(filepath.Join(dir, "changelog"), []byte(content), 0644)
@@ -97,11 +98,12 @@ func writeChangelog(dir string, cfg *Config) {
 
 func writeControl(dir string, cfg *Config) {
 	controlTemplate := `Source: {{.Name}}
+Maintainer: {{.Maintainer}}
 Section: utils
 Priority: optional
-Maintainer: {{.Maintainer}}
 Build-Depends: debhelper (>= 9)
 Standards-Version: 4.5.0
+
 Package: {{.Name}}
 Architecture: all
 Depends: {{ join .Dependencies ", " }}
