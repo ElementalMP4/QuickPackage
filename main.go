@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -42,24 +41,36 @@ func (c Config) GetUninstallScript() string {
 }
 
 func main() {
-	action := flag.String("action", "", "Action to perform: build, install, uninstall")
-	configPath := flag.String("config", ".qp/config.json", "Path to config file")
-	flag.Parse()
-
-	if *action != "build" && *action != "install" && *action != "uninstall" {
-		log.Fatal("Must specify -action=build|install|uninstall")
+	if len(os.Args) < 2 {
+		log.Fatal("Usage: quickpackage [build|install|uninstall] [--config <path>]")
 	}
 
-	cfg, err := loadConfig(*configPath)
+	action := os.Args[1]
+	args := os.Args[2:]
+
+	configPath := ".qp/config.json"
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--config" && i+1 < len(args) {
+			configPath = args[i+1]
+			i++
+		}
+	}
+
+	if action != "build" && action != "install" && action != "uninstall" {
+		log.Fatalf("Unknown action %q. Must be one of: build, install, uninstall", action)
+	}
+
+	cfg, err := loadConfig(configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 	validateConfig(cfg)
 
-	switch *action {
+	switch action {
 	case "build":
 		doBuild(cfg)
 	case "install":
+		doBuild(cfg)
 		doInstall(cfg)
 	case "uninstall":
 		doUninstall(cfg)
