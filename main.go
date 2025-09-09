@@ -118,10 +118,8 @@ func doBuild(cfg *Config) {
 			log.Printf("Warning: no build files matched pattern %q", pattern)
 		}
 
-		baseDir := getGlobBase(pattern)
-
 		for _, src := range matches {
-			if err := copyPreserveRel(src, baseDir, buildDir); err != nil {
+			if err := copyPreserveRel(src, buildDir); err != nil {
 				log.Fatalf("%v", err)
 			}
 		}
@@ -130,11 +128,12 @@ func doBuild(cfg *Config) {
 	if cfg.BuildScript != "" {
 		scriptPath := filepath.Join(buildDir, filepath.Base(cfg.BuildScript))
 		if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-			err = copyFileOrDir(cfg.GetBuildScript(), scriptPath)
+			err = cp.Copy(cfg.GetBuildScript(), scriptPath)
 			if err != nil {
 				log.Fatalf("Failed to copy build script %s: %v", cfg.BuildScript, err)
 			}
 		}
+
 		log.Printf("Running build script: %s", scriptPath)
 		cmd := exec.Command("/bin/bash", scriptPath)
 		cmd.Dir = buildDir
@@ -157,12 +156,14 @@ func getGlobBase(pattern string) string {
 	return pattern
 }
 
-func copyPreserveRel(src, baseDir, dstRoot string) error {
-	relPath, err := filepath.Rel(baseDir, src)
+func copyPreserveRel(src, dstRoot string) error {
+	// Compute path relative to cwd
+	relPath, err := filepath.Rel(".", src)
 	if err != nil {
 		return fmt.Errorf("failed to compute relative path for %s: %w", src, err)
 	}
 
+	// If src == cwd, use basename
 	if relPath == "." {
 		relPath = filepath.Base(src)
 	}
@@ -173,7 +174,7 @@ func copyPreserveRel(src, baseDir, dstRoot string) error {
 		return fmt.Errorf("failed to create directories for %s: %w", dst, err)
 	}
 
-	if err := copyFileOrDir(src, dst); err != nil {
+	if err := cp.Copy(src, dst); err != nil {
 		return fmt.Errorf("failed to copy %s to %s: %w", src, dst, err)
 	}
 
@@ -192,17 +193,16 @@ func doInstall(cfg *Config) {
 	buildDir, _ := findTempBuildDir(cfg.AppName)
 
 	for _, entry := range cfg.InstallFiles {
-		var srcPath, baseDir string
+		var srcPath string
+
 		switch entry.From {
 		case "cwd":
 			srcPath = entry.File
-			baseDir = "." // keep relative path as-is
 		case "build":
 			if buildDir == "" {
 				log.Fatalf("Build directory unknown, but install file %q is marked from build", entry.File)
 			}
 			srcPath = filepath.Join(buildDir, entry.File)
-			baseDir = buildDir
 		default:
 			log.Fatalf("Unknown 'from' value %q for install file %q", entry.From, entry.File)
 		}
@@ -211,7 +211,7 @@ func doInstall(cfg *Config) {
 			log.Fatalf("Install source file %s does not exist", srcPath)
 		}
 
-		if err := copyPreserveRel(srcPath, baseDir, installDir); err != nil {
+		if err := copyPreserveRel(srcPath, installDir); err != nil {
 			log.Fatalf("%v", err)
 		}
 	}
@@ -219,11 +219,12 @@ func doInstall(cfg *Config) {
 	if cfg.InstallScript != "" {
 		scriptPath := filepath.Join(installDir, filepath.Base(cfg.InstallScript))
 		if !exists(scriptPath) {
-			err := copyFileOrDir(cfg.GetInstallScript(), scriptPath)
+			err := cp.Copy(cfg.GetInstallScript(), scriptPath)
 			if err != nil {
 				log.Fatalf("Failed to copy install script %s: %v", cfg.InstallScript, err)
 			}
 		}
+
 		log.Printf("Running install script: %s", scriptPath)
 		runScript(scriptPath, installDir)
 	} else {
