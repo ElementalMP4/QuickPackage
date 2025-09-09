@@ -151,11 +151,10 @@ func doBuild(cfg *Config) {
 }
 
 func getGlobBase(pattern string) string {
-	base := pattern
-	for strings.Contains(base, "*") || strings.Contains(base, "?") || strings.Contains(base, "[") {
-		base = filepath.Dir(base)
+	for strings.Contains(pattern, "*") || strings.Contains(pattern, "?") || strings.Contains(pattern, "[") {
+		pattern = filepath.Dir(pattern)
 	}
-	return base
+	return pattern
 }
 
 func copyPreserveRel(src, baseDir, dstRoot string) error {
