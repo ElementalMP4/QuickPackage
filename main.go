@@ -164,7 +164,12 @@ func copyPreserveRel(src, baseDir, dstRoot string) error {
 		return fmt.Errorf("failed to compute relative path for %s: %w", src, err)
 	}
 
+	if relPath == "." {
+		relPath = filepath.Base(src)
+	}
+
 	dst := filepath.Join(dstRoot, relPath)
+
 	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 		return fmt.Errorf("failed to create directories for %s: %w", dst, err)
 	}
