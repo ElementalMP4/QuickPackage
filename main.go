@@ -305,12 +305,13 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=%s
+WorkingDirectory=%s
 Restart=always
 User=root
 
 [Install]
 WantedBy=multi-user.target
-`, cfg.AppName, cfg.Exec)
+`, cfg.AppName, cfg.Exec, "/opt/qp_apps/"+cfg.AppName)
 
 	unitPath := "/usr/lib/systemd/system/" + cfg.AppName + ".service"
 	err := os.WriteFile(unitPath, []byte(unit), 0644)
