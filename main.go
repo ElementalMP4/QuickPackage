@@ -119,7 +119,7 @@ func doBuild(cfg *Config) {
 		}
 
 		for _, src := range matches {
-			if err := copyPreserveRel(src, buildDir); err != nil {
+			if err := copyPreserveRelBase(src, ".", buildDir); err != nil {
 				log.Fatalf("%v", err)
 			}
 		}
@@ -128,8 +128,7 @@ func doBuild(cfg *Config) {
 	if cfg.BuildScript != "" {
 		scriptPath := filepath.Join(buildDir, filepath.Base(cfg.BuildScript))
 		if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-			err = cp.Copy(cfg.GetBuildScript(), scriptPath)
-			if err != nil {
+			if err := cp.Copy(cfg.GetBuildScript(), scriptPath); err != nil {
 				log.Fatalf("Failed to copy build script %s: %v", cfg.BuildScript, err)
 			}
 		}
@@ -149,21 +148,12 @@ func doBuild(cfg *Config) {
 	log.Printf("Build complete!")
 }
 
-func getGlobBase(pattern string) string {
-	for strings.Contains(pattern, "*") || strings.Contains(pattern, "?") || strings.Contains(pattern, "[") {
-		pattern = filepath.Dir(pattern)
-	}
-	return pattern
-}
-
-func copyPreserveRel(src, dstRoot string) error {
-	// Compute path relative to cwd
-	relPath, err := filepath.Rel(".", src)
+func copyPreserveRelBase(src, baseDir, dstRoot string) error {
+	relPath, err := filepath.Rel(baseDir, src)
 	if err != nil {
 		return fmt.Errorf("failed to compute relative path for %s: %w", src, err)
 	}
 
-	// If src == cwd, use basename
 	if relPath == "." {
 		relPath = filepath.Base(src)
 	}
@@ -193,16 +183,18 @@ func doInstall(cfg *Config) {
 	buildDir, _ := findTempBuildDir(cfg.AppName)
 
 	for _, entry := range cfg.InstallFiles {
-		var srcPath string
+		var srcPath, baseDir string
 
 		switch entry.From {
 		case "cwd":
 			srcPath = entry.File
+			baseDir = "." // preserve relative to project root
 		case "build":
 			if buildDir == "" {
 				log.Fatalf("Build directory unknown, but install file %q is marked from build", entry.File)
 			}
 			srcPath = filepath.Join(buildDir, entry.File)
+			baseDir = buildDir // preserve relative to build dir
 		default:
 			log.Fatalf("Unknown 'from' value %q for install file %q", entry.From, entry.File)
 		}
@@ -211,7 +203,7 @@ func doInstall(cfg *Config) {
 			log.Fatalf("Install source file %s does not exist", srcPath)
 		}
 
-		if err := copyPreserveRel(srcPath, installDir); err != nil {
+		if err := copyPreserveRelBase(srcPath, baseDir, installDir); err != nil {
 			log.Fatalf("%v", err)
 		}
 	}
@@ -219,8 +211,7 @@ func doInstall(cfg *Config) {
 	if cfg.InstallScript != "" {
 		scriptPath := filepath.Join(installDir, filepath.Base(cfg.InstallScript))
 		if !exists(scriptPath) {
-			err := cp.Copy(cfg.GetInstallScript(), scriptPath)
-			if err != nil {
+			if err := cp.Copy(cfg.GetInstallScript(), scriptPath); err != nil {
 				log.Fatalf("Failed to copy install script %s: %v", cfg.InstallScript, err)
 			}
 		}
@@ -232,8 +223,7 @@ func doInstall(cfg *Config) {
 	}
 
 	if cfg.Systemd {
-		err := installSystemdUnit(cfg)
-		if err != nil {
+		if err := installSystemdUnit(cfg); err != nil {
 			log.Fatalf("Failed to install systemd unit: %v", err)
 		}
 
