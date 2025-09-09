@@ -117,12 +117,13 @@ func doBuild(cfg *Config) {
 		if len(matches) == 0 {
 			log.Printf("Warning: no build files matched pattern %q", pattern)
 		}
+
+		baseDir := getGlobBase(pattern)
+
 		for _, src := range matches {
-			err := copyFileOrDir(src, filepath.Join(buildDir, filepath.Base(src)))
-			if err != nil {
-				log.Fatalf("Failed to copy build file %s: %v", src, err)
+			if err := copyPreserveRel(src, baseDir, buildDir); err != nil {
+				log.Fatalf("%v", err)
 			}
-			log.Printf("Copied build file %s", src)
 		}
 	}
 
@@ -149,27 +150,55 @@ func doBuild(cfg *Config) {
 	log.Printf("Build complete!")
 }
 
+func getGlobBase(pattern string) string {
+	base := pattern
+	for strings.Contains(base, "*") || strings.Contains(base, "?") || strings.Contains(base, "[") {
+		base = filepath.Dir(base)
+	}
+	return base
+}
+
+func copyPreserveRel(src, baseDir, dstRoot string) error {
+	relPath, err := filepath.Rel(baseDir, src)
+	if err != nil {
+		return fmt.Errorf("failed to compute relative path for %s: %w", src, err)
+	}
+
+	dst := filepath.Join(dstRoot, relPath)
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return fmt.Errorf("failed to create directories for %s: %w", dst, err)
+	}
+
+	if err := copyFileOrDir(src, dst); err != nil {
+		return fmt.Errorf("failed to copy %s to %s: %w", src, dst, err)
+	}
+
+	log.Printf("Copied %s -> %s", src, dst)
+	return nil
+}
+
 func doInstall(cfg *Config) {
 	installDir := filepath.Join("/opt/qp_apps", cfg.AppName)
 	log.Printf("Installing to %s", installDir)
 
-	err := os.MkdirAll(installDir, 0755)
-	if err != nil {
+	if err := os.MkdirAll(installDir, 0755); err != nil {
 		log.Fatalf("Failed to create install dir: %v", err)
 	}
 
 	buildDir, _ := findTempBuildDir(cfg.AppName)
 
 	for _, entry := range cfg.InstallFiles {
-		var srcPath string
+		var srcPath, baseDir string
 		switch entry.From {
 		case "cwd":
 			srcPath = entry.File
+			baseDir = "." // keep relative path as-is
 		case "build":
 			if buildDir == "" {
 				log.Fatalf("Build directory unknown, but install file %q is marked from build", entry.File)
 			}
 			srcPath = filepath.Join(buildDir, entry.File)
+			baseDir = buildDir
 		default:
 			log.Fatalf("Unknown 'from' value %q for install file %q", entry.From, entry.File)
 		}
@@ -178,12 +207,9 @@ func doInstall(cfg *Config) {
 			log.Fatalf("Install source file %s does not exist", srcPath)
 		}
 
-		dstPath := filepath.Join(installDir, filepath.Base(entry.File))
-		err := copyFileOrDir(srcPath, dstPath)
-		if err != nil {
-			log.Fatalf("Failed to copy install file %s: %v", srcPath, err)
+		if err := copyPreserveRel(srcPath, baseDir, installDir); err != nil {
+			log.Fatalf("%v", err)
 		}
-		log.Printf("Copied install file %s", srcPath)
 	}
 
 	if cfg.InstallScript != "" {
@@ -208,8 +234,7 @@ func doInstall(cfg *Config) {
 
 		serviceName := cfg.AppName + ".service"
 		cmdCheck := exec.Command("systemctl", "is-active", "--quiet", serviceName)
-		err = cmdCheck.Run()
-		if err == nil {
+		if err := cmdCheck.Run(); err == nil {
 			log.Printf("Restarting active systemd service %s", serviceName)
 			cmdRestart := exec.Command("systemctl", "restart", serviceName)
 			cmdRestart.Stdout = os.Stdout
