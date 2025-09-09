@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	cp "github.com/otiai10/copy"
 )
@@ -175,6 +176,30 @@ func copyPreserveRelBase(src, baseDir, dstRoot string) error {
 func doInstall(cfg *Config) {
 	installDir := filepath.Join("/opt/qp_apps", cfg.AppName)
 	log.Printf("Installing to %s", installDir)
+
+	if cfg.Systemd {
+		serviceName := cfg.AppName + ".service"
+		cmdCheck := exec.Command("systemctl", "is-active", "--quiet", serviceName)
+		if err := cmdCheck.Run(); err == nil {
+			log.Printf("Stopping active systemd service %s", serviceName)
+			cmdStop := exec.Command("systemctl", "stop", serviceName)
+			cmdStop.Stdout = os.Stdout
+			cmdStop.Stderr = os.Stderr
+			if err := cmdStop.Run(); err != nil {
+				log.Fatalf("Failed to stop systemd service %s: %v", serviceName, err)
+			}
+			// Wait for the service to stop
+			for {
+				cmdStatus := exec.Command("systemctl", "is-active", "--quiet", serviceName)
+				if err := cmdStatus.Run(); err != nil {
+					break // service is stopped
+				}
+				log.Printf("Waiting for %s to stop...", serviceName)
+				time.Sleep(1 * time.Second)
+			}
+			log.Printf("Service %s stopped.", serviceName)
+		}
+	}
 
 	if err := os.MkdirAll(installDir, 0755); err != nil {
 		log.Fatalf("Failed to create install dir: %v", err)
