@@ -109,6 +109,26 @@ func doBuild(cfg *Config) {
 
 	log.Printf("Build directory: %s", buildDir)
 
+	defer func() {
+		log.Printf("Cleaning up build directory: %s", buildDir)
+		os.RemoveAll(buildDir)
+
+		tmp := os.TempDir()
+		entries, err := os.ReadDir(tmp)
+		if err != nil {
+			log.Printf("Warning: could not read temp dir: %v", err)
+			return
+		}
+		prefix := "qp_build_" + cfg.AppName + "_"
+		for _, e := range entries {
+			path := filepath.Join(tmp, e.Name())
+			if strings.HasPrefix(e.Name(), prefix) && path != buildDir {
+				log.Printf("Removing dangling build directory: %s", path)
+				os.RemoveAll(path)
+			}
+		}
+	}()
+
 	for _, pattern := range cfg.BuildFiles {
 		matches, err := filepath.Glob(pattern)
 		if err != nil {
