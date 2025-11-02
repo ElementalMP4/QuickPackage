@@ -176,9 +176,9 @@ func copyPreserveRelBase(src, baseDir, dstRoot string) error {
 func doInstall(cfg *Config) {
 	installDir := filepath.Join("/opt/qp_apps", cfg.AppName)
 	log.Printf("Installing to %s", installDir)
+	serviceName := cfg.AppName + ".service"
 
 	if cfg.Systemd {
-		serviceName := cfg.AppName + ".service"
 		cmdCheck := exec.Command("systemctl", "is-active", "--quiet", serviceName)
 		if err := cmdCheck.Run(); err == nil {
 			log.Printf("Stopping active systemd service %s", serviceName)
@@ -252,18 +252,12 @@ func doInstall(cfg *Config) {
 			log.Fatalf("Failed to install systemd unit: %v", err)
 		}
 
-		serviceName := cfg.AppName + ".service"
-		cmdCheck := exec.Command("systemctl", "is-active", "--quiet", serviceName)
-		if err := cmdCheck.Run(); err == nil {
-			log.Printf("Restarting active systemd service %s", serviceName)
-			cmdRestart := exec.Command("systemctl", "restart", serviceName)
-			cmdRestart.Stdout = os.Stdout
-			cmdRestart.Stderr = os.Stderr
-			if err := cmdRestart.Run(); err != nil {
-				log.Fatalf("Failed to restart systemd service %s: %v", serviceName, err)
-			}
-		} else {
-			log.Printf("Systemd service %s is not active, no restart needed", serviceName)
+		log.Printf("Starting systemd service %s", serviceName)
+		cmdRestart := exec.Command("systemctl", "start", serviceName)
+		cmdRestart.Stdout = os.Stdout
+		cmdRestart.Stderr = os.Stderr
+		if err := cmdRestart.Run(); err != nil {
+			log.Fatalf("Failed to start systemd service %s: %v", serviceName, err)
 		}
 	}
 
