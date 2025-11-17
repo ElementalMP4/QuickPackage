@@ -227,12 +227,16 @@ func doInstall(cfg *Config) {
 			log.Fatalf("Failed to install systemd unit: %v", err)
 		}
 
-		log.Printf("Starting systemd service %s", unit.UnitNameWildcard())
-		cmdRestart := exec.Command("systemctl", "start", unit.UnitNameWildcard())
-		cmdRestart.Stdout = os.Stdout
-		cmdRestart.Stderr = os.Stderr
-		if err := cmdRestart.Run(); err != nil {
-			log.Fatalf("Failed to start systemd service %s: %v", unit.UnitNameWildcard(), err)
+		if cfg.SystemdRunAsUser {
+			log.Printf("Config has mult-user mode enabled, skipping service start")
+		} else {
+			log.Printf("Starting systemd service %s", unit.UnitNameWildcard())
+			cmdRestart := exec.Command("systemctl", "start", unit.UnitNameWildcard())
+			cmdRestart.Stdout = os.Stdout
+			cmdRestart.Stderr = os.Stderr
+			if err := cmdRestart.Run(); err != nil {
+				log.Fatalf("Failed to start systemd service %s: %v", unit.UnitNameWildcard(), err)
+			}
 		}
 	}
 
