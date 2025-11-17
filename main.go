@@ -230,12 +230,19 @@ func doInstall(cfg *Config) {
 		if cfg.SystemdRunAsUser {
 			log.Printf("Config has mult-user mode enabled, skipping service start")
 		} else {
-			log.Printf("Starting systemd service %s", unit.UnitNameWildcard())
-			cmdRestart := exec.Command("systemctl", "start", unit.UnitNameWildcard())
+			log.Printf("Starting systemd service %s", unit.UnitName())
+			cmdEnable := exec.Command("systemctl", "enable", "--now", unit.UnitName())
+			cmdEnable.Stdout = os.Stdout
+			cmdEnable.Stderr = os.Stderr
+			if err := cmdEnable.Run(); err != nil {
+				log.Fatalf("Failed to enable systemd service %s: %v", unit.UnitName(), err)
+			}
+
+			cmdRestart := exec.Command("systemctl", "start", unit.UnitName())
 			cmdRestart.Stdout = os.Stdout
 			cmdRestart.Stderr = os.Stderr
 			if err := cmdRestart.Run(); err != nil {
-				log.Fatalf("Failed to start systemd service %s: %v", unit.UnitNameWildcard(), err)
+				log.Fatalf("Failed to start systemd service %s: %v", unit.UnitName(), err)
 			}
 		}
 	}
@@ -318,17 +325,11 @@ func installSystemdUnit(cfg *Config) error {
 	}
 	log.Printf("Wrote systemd unit to %s", unit.UnitPath())
 
-	cmds := [][]string{
-		{"systemctl", "daemon-reload"},
-		{"systemctl", "enable", "--now", unit.UnitName()},
-	}
-	for _, args := range cmds {
-		cmd := exec.Command(args[0], args[1:]...)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("%s failed: %w", strings.Join(args, " "), err)
-		}
+	cmd := exec.Command("systemctl", "daemon-reload")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to reload systemd: %w", err)
 	}
 	return nil
 }
