@@ -13,6 +13,8 @@ import (
 	cp "github.com/otiai10/copy"
 )
 
+var InstallPath string = "/opt/"
+
 type FileEntry struct {
 	File string `json:"file"`
 	From string `json:"from"`
@@ -174,7 +176,7 @@ func copyPreserveRelBase(src, baseDir, dstRoot string) error {
 }
 
 func doInstall(cfg *Config) {
-	installDir := filepath.Join("/opt/qp_apps", cfg.AppName)
+	installDir := filepath.Join(InstallPath, cfg.AppName)
 	log.Printf("Installing to %s", installDir)
 	serviceName := cfg.AppName + ".service"
 
@@ -280,7 +282,7 @@ func doInstall(cfg *Config) {
 }
 
 func doUninstall(cfg *Config) {
-	installDir := filepath.Join("/opt/qp_apps", cfg.AppName)
+	installDir := filepath.Join(InstallPath, cfg.AppName)
 
 	if cfg.Systemd {
 		service := cfg.AppName + ".service"
@@ -345,7 +347,7 @@ User=root
 
 [Install]
 WantedBy=multi-user.target
-`, cfg.AppName, cfg.Exec, "/opt/qp_apps/"+cfg.AppName)
+`, cfg.AppName, cfg.Exec, filepath.Join(InstallPath, cfg.AppName))
 
 	unitPath := "/usr/lib/systemd/system/" + cfg.AppName + ".service"
 	err := os.WriteFile(unitPath, []byte(unit), 0644)
