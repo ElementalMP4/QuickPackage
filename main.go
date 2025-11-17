@@ -265,7 +265,7 @@ func doUninstall(cfg *Config) {
 		unit := UnitFromConfig(cfg)
 		log.Printf("Stopping and disabling systemd service %s", unit.UnitNameWildcard())
 		exec.Command("systemctl", "stop", unit.UnitNameWildcard()).Run()
-		exec.Command("systemctl", "disable", unit.UnitNameWildcard()).Run()
+		exec.Command("systemctl", "disable", unit.UnitName()).Run()
 		os.Remove(unit.UnitPath())
 		exec.Command("systemctl", "daemon-reload").Run()
 	}
@@ -320,7 +320,7 @@ func installSystemdUnit(cfg *Config) error {
 
 	cmds := [][]string{
 		{"systemctl", "daemon-reload"},
-		{"systemctl", "enable", "--now", unit.UnitNameWildcard()},
+		{"systemctl", "enable", "--now", unit.UnitName()},
 	}
 	for _, args := range cmds {
 		cmd := exec.Command(args[0], args[1:]...)
