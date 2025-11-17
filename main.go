@@ -15,34 +15,6 @@ import (
 
 var InstallPath string = "/opt/"
 
-type FileEntry struct {
-	File string `json:"file"`
-	From string `json:"from"`
-}
-
-type Config struct {
-	AppName         string      `json:"app_name"`
-	BuildFiles      []string    `json:"build_files"`
-	InstallFiles    []FileEntry `json:"install_files"`
-	BuildScript     string      `json:"build_script,omitempty"`
-	InstallScript   string      `json:"install_script,omitempty"`
-	UninstallScript string      `json:"uninstall_script,omitempty"`
-	Systemd         bool        `json:"systemd"`
-	Exec            string      `json:"exec,omitempty"`
-}
-
-func (c Config) GetBuildScript() string {
-	return fmt.Sprintf(".qp/%s", c.BuildScript)
-}
-
-func (c Config) GetInstallScript() string {
-	return fmt.Sprintf(".qp/%s", c.InstallScript)
-}
-
-func (c Config) GetUninstallScript() string {
-	return fmt.Sprintf(".qp/%s", c.UninstallScript)
-}
-
 func main() {
 	if len(os.Args) < 2 {
 		log.Fatal("Usage: quickpackage [build|install|uninstall] [--config <path>]")
@@ -178,28 +150,29 @@ func copyPreserveRelBase(src, baseDir, dstRoot string) error {
 func doInstall(cfg *Config) {
 	installDir := filepath.Join(InstallPath, cfg.AppName)
 	log.Printf("Installing to %s", installDir)
-	serviceName := cfg.AppName + ".service"
+
+	unit := UnitFromConfig(cfg)
 
 	if cfg.Systemd {
-		cmdCheck := exec.Command("systemctl", "is-active", "--quiet", serviceName)
+		cmdCheck := exec.Command("systemctl", "is-active", "--quiet", unit.UnitNameWildcard())
 		if err := cmdCheck.Run(); err == nil {
-			log.Printf("Stopping active systemd service %s", serviceName)
-			cmdStop := exec.Command("systemctl", "stop", serviceName)
+			log.Printf("Stopping active systemd service %s", unit.UnitNameWildcard())
+			cmdStop := exec.Command("systemctl", "stop", unit.UnitNameWildcard())
 			cmdStop.Stdout = os.Stdout
 			cmdStop.Stderr = os.Stderr
 			if err := cmdStop.Run(); err != nil {
-				log.Fatalf("Failed to stop systemd service %s: %v", serviceName, err)
+				log.Fatalf("Failed to stop systemd service %s: %v", unit.UnitNameWildcard(), err)
 			}
 			// Wait for the service to stop
 			for {
-				cmdStatus := exec.Command("systemctl", "is-active", "--quiet", serviceName)
+				cmdStatus := exec.Command("systemctl", "is-active", "--quiet", unit.UnitNameWildcard())
 				if err := cmdStatus.Run(); err != nil {
 					break // service is stopped
 				}
-				log.Printf("Waiting for %s to stop...", serviceName)
+				log.Printf("Waiting for %s to stop...", unit.UnitNameWildcard())
 				time.Sleep(1 * time.Second)
 			}
-			log.Printf("Service %s stopped.", serviceName)
+			log.Printf("Service %s stopped.", unit.UnitNameWildcard())
 		}
 	}
 
@@ -254,12 +227,12 @@ func doInstall(cfg *Config) {
 			log.Fatalf("Failed to install systemd unit: %v", err)
 		}
 
-		log.Printf("Starting systemd service %s", serviceName)
-		cmdRestart := exec.Command("systemctl", "start", serviceName)
+		log.Printf("Starting systemd service %s", unit.UnitNameWildcard())
+		cmdRestart := exec.Command("systemctl", "start", unit.UnitNameWildcard())
 		cmdRestart.Stdout = os.Stdout
 		cmdRestart.Stderr = os.Stderr
 		if err := cmdRestart.Run(); err != nil {
-			log.Fatalf("Failed to start systemd service %s: %v", serviceName, err)
+			log.Fatalf("Failed to start systemd service %s: %v", unit.UnitNameWildcard(), err)
 		}
 	}
 
@@ -285,11 +258,11 @@ func doUninstall(cfg *Config) {
 	installDir := filepath.Join(InstallPath, cfg.AppName)
 
 	if cfg.Systemd {
-		service := cfg.AppName + ".service"
-		log.Printf("Stopping and disabling systemd service %s", service)
-		exec.Command("systemctl", "stop", service).Run()
-		exec.Command("systemctl", "disable", service).Run()
-		os.Remove("/usr/lib/systemd/system/" + service)
+		unit := UnitFromConfig(cfg)
+		log.Printf("Stopping and disabling systemd service %s", unit.UnitNameWildcard())
+		exec.Command("systemctl", "stop", unit.UnitNameWildcard()).Run()
+		exec.Command("systemctl", "disable", unit.UnitNameWildcard()).Run()
+		os.Remove(unit.UnitPath())
 		exec.Command("systemctl", "daemon-reload").Run()
 	}
 
@@ -334,31 +307,16 @@ func runScript(scriptPath, workDir string) {
 }
 
 func installSystemdUnit(cfg *Config) error {
-	unit := fmt.Sprintf(`[Unit]
-Description=%s service
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=%s
-WorkingDirectory=%s
-Restart=always
-User=root
-
-[Install]
-WantedBy=multi-user.target
-`, cfg.AppName, cfg.Exec, filepath.Join(InstallPath, cfg.AppName))
-
-	unitPath := "/usr/lib/systemd/system/" + cfg.AppName + ".service"
-	err := os.WriteFile(unitPath, []byte(unit), 0644)
+	unit := UnitFromConfig(cfg)
+	err := os.WriteFile(unit.UnitPath(), []byte(unit.GenerateFile()), 0644)
 	if err != nil {
 		return err
 	}
-	log.Printf("Wrote systemd unit to %s", unitPath)
+	log.Printf("Wrote systemd unit to %s", unit.UnitPath())
 
 	cmds := [][]string{
 		{"systemctl", "daemon-reload"},
-		{"systemctl", "enable", "--now", cfg.AppName + ".service"},
+		{"systemctl", "enable", "--now", unit.UnitNameWildcard()},
 	}
 	for _, args := range cmds {
 		cmd := exec.Command(args[0], args[1:]...)
